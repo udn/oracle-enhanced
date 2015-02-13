@@ -10,12 +10,9 @@ module ActiveRecord
         log(sql, name) { @connection.exec(sql) }
       end
 
-      def substitute_at(column, index)
-        Arel::Nodes::BindParam.new (":a#{index + 1}")
-      end
-
       def clear_cache!
         @statements.clear
+        reload_type_map
       end
 
       def exec_query(sql, name = 'SQL', binds = [])
@@ -109,7 +106,7 @@ module ActiveRecord
       def sql_for_insert(sql, pk, id_value, sequence_name, binds)
         unless id_value || pk.nil? || (defined?(CompositePrimaryKeys) && pk.kind_of?(CompositePrimaryKeys::CompositeKeys))
           sql = "#{sql} RETURNING #{quote_column_name(pk)} INTO :returning_id"
-          returning_id_col = OracleEnhancedColumn.new("returning_id", nil, "number", true, "dual", :integer, true, true)
+          returning_id_col = OracleEnhancedColumn.new("returning_id", nil, Type::Value.new, "number", true, "dual", :integer, true, true)
           (binds = binds.dup) << [returning_id_col, nil]
         end
         [sql, binds]
@@ -214,11 +211,11 @@ module ActiveRecord
       end
 
       def create_savepoint(name = current_savepoint_name) #:nodoc:
-        execute("SAVEPOINT #{current_savepoint_name}")
+        execute("SAVEPOINT #{name}")
       end
 
       def rollback_to_savepoint(name = current_savepoint_name) #:nodoc:
-        execute("ROLLBACK TO #{current_savepoint_name}")
+        execute("ROLLBACK TO #{name}")
       end
 
       def release_savepoint(name = current_savepoint_name) #:nodoc:

@@ -326,9 +326,9 @@ module ActiveRecord
       # Check column name to identify if it is boolean (and not String) column.
       # Is used if +emulate_booleans_from_strings+ option is set to +true+.
       # Override this method definition in initializer file if different boolean column recognition is needed.
-      def self.is_boolean_column?(name, field_type, table_name = nil)
-        return true if ["CHAR(1)","VARCHAR2(1)"].include?(field_type)
-        field_type =~ /^VARCHAR2/ && (name =~ /_flag$/i || name =~ /_yn$/i)
+      def self.is_boolean_column?(name, sql_type, table_name = nil)
+        return true if ["CHAR(1)","VARCHAR2(1)"].include?(sql_type)
+        sql_type =~ /^VARCHAR2/ && (name =~ /_flag$/i || name =~ /_yn$/i)
       end
 
       # How boolean value should be quoted to String.
@@ -383,21 +383,18 @@ module ActiveRecord
         end
       end
 
-      class BindSubstitution < Arel::Visitors::Oracle #:nodoc:
-        include Arel::Visitors::BindVisitor
-      end
-
       def initialize(connection, logger, config) #:nodoc:
         super(connection, logger)
         @quoted_column_names, @quoted_table_names = {}, {}
         @config = config
         @statements = StatementPool.new(connection, config.fetch(:statement_limit) { 250 })
         @enable_dbms_output = false
-        if config.fetch(:prepared_statements) { true }
-          @visitor = Arel::Visitors::Oracle.new self
+        @visitor = Arel::Visitors::Oracle.new self
+
+        if self.class.type_cast_config_to_boolean(config.fetch(:prepared_statements) { true })
           @prepared_statements = true
         else
-          @visitor = unprepared_visitor
+          @prepared_statements = false
         end
       end
 
@@ -420,6 +417,10 @@ module ActiveRecord
       end
 
       def supports_transaction_isolation? #:nodoc:
+        true
+      end
+
+      def supports_views?
         true
       end
 
@@ -800,7 +801,7 @@ module ActiveRecord
           value = attributes[col.name]
           # changed sequence of next two lines - should check if value is nil before converting to yaml
           next if value.nil?  || (value == '')
-          value = value.to_yaml if col.text? && klass.serialized_attributes[col.name]
+          value = value.to_yaml if value.is_a?(String) && klass.serialized_attributes[col.name]
           uncached do
             sql = is_with_cpk ? "SELECT #{quote_column_name(col.name)} FROM #{quote_table_name(table_name)} WHERE #{klass.composite_where_clause(id)} FOR UPDATE" :
               "SELECT #{quote_column_name(col.name)} FROM #{quote_table_name(table_name)} WHERE #{quote_column_name(klass.primary_key)} = #{id} FOR UPDATE"
@@ -1045,8 +1046,18 @@ module ActiveRecord
             row['data_default'] = nil if row['data_default'] =~ /^(null|empty_[bc]lob\(\))$/i
           end
 
+          # TODO: It is just for `set_date_columns` now. Needs to be generic
+          case get_type_for_column(table_name, oracle_downcase(row['name']))
+          when :date
+            cast_type = Type::Date.new
+          when :integer
+            cast_type = Type::Integer.new
+          else
+            cast_type = lookup_cast_type(row['sql_type'])
+          end
           OracleEnhancedColumn.new(oracle_downcase(row['name']),
                            row['data_default'],
+                           cast_type,
                            row['sql_type'],
                            row['nullable'] == 'Y',
                            # pass table name for table specific column definitions
@@ -1193,7 +1204,32 @@ module ActiveRecord
         end
       end
 
+      def new_column(name, default, cast_type, sql_type = nil, null = true, table_name = nil, forced_column_type = nil, virtual=false, returning_id=false)
+        ActiveRecord::ConnectionAdapters::OracleEnhancedColumn.new(name, default, cast_type, sql_type = nil, null = true, table_name = nil, forced_column_type = nil, virtual=false, returning_id=false)
+      end
+
       protected
+
+      def initialize_type_map(m)
+        super
+        # oracle
+        register_class_with_limit m, %r(date)i, Type::DateTime
+        register_class_with_limit m, %r(raw)i,  Type::Raw
+        m.register_type(%r(NUMBER)i) do |sql_type|
+          scale = extract_scale(sql_type)
+          precision = extract_precision(sql_type)
+          if scale == 0
+            Type::Integer.new(precision: precision)
+          else
+            if OracleEnhancedAdapter.number_datatype_coercion == :decimal
+              Type::Decimal.new(precision: precision, scale: scale)
+            elsif OracleEnhancedAdapter.number_datatype_coercion == :float
+              Type::Float.new(precision: precision, scale: scale)
+            end
+          end
+        end
+        m.alias_type %r(NUMBER\(1\))i, 'boolean' if OracleEnhancedAdapter.emulate_booleans
+      end
 
       def translate_exception(exception, message) #:nodoc:
         case @connection.error_code(exception)
@@ -1207,6 +1243,10 @@ module ActiveRecord
       end
 
       private
+
+      def select(sql, name = nil, binds = [])
+        exec_query(sql, name, binds)
+      end
 
       def oracle_downcase(column_name)
         @connection.oracle_downcase(column_name)
@@ -1244,12 +1284,8 @@ module ActiveRecord
       end
 
       protected
-      def log(sql, name, binds = nil) #:nodoc:
-        if binds
-          super sql, name, binds
-        else
-          super sql, name
-        end
+      def log(sql, name = "SQL", binds = [], statement_name = nil) #:nodoc:
+        super
       ensure
         log_dbms_output if dbms_output_enabled?
       end
@@ -1312,3 +1348,6 @@ require 'active_record/connection_adapters/oracle_enhanced_schema_creation'
 
 # Moved DatabaseStetements
 require 'active_record/connection_adapters/oracle_enhanced_database_statements'
+
+# Add Type:Raw
+require 'active_record/type/raw'

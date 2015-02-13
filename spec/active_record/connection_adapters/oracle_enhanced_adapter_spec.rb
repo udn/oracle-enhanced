@@ -473,7 +473,7 @@ describe "OracleEnhancedAdapter" do
         t.string      :title
         # cannot update LOBs over database link
         t.string      :body
-        t.timestamps
+        t.timestamps null: true
       end
       @db_link_username = SYSTEM_CONNECTION_PARAMS[:username]
       @db_link_password = SYSTEM_CONNECTION_PARAMS[:password]
@@ -625,8 +625,8 @@ describe "OracleEnhancedAdapter" do
     end
 
     it "should clear older cursors when statement limit is reached" do
-      pk = TestPost.columns.find { |c| c.primary }
-      sub = @conn.substitute_at(pk, 0)
+      pk = TestPost.columns_hash[TestPost.primary_key]
+      sub = @conn.substitute_at(pk, 0).to_sql
       binds = [[pk, 1]]
 
       lambda {
@@ -638,8 +638,8 @@ describe "OracleEnhancedAdapter" do
 
     it "should cache UPDATE statements with bind variables" do
       lambda {
-        pk = TestPost.columns.find { |c| c.primary }
-        sub = @conn.substitute_at(pk, 0)
+        pk = TestPost.columns_hash[TestPost.primary_key]
+        sub = @conn.substitute_at(pk, 0).to_sql
         binds = [[pk, 1]]
         @conn.exec_update("UPDATE test_posts SET id = #{sub}", "SQL", binds)
       }.should change(@statements, :length).by(+1)
@@ -679,7 +679,7 @@ describe "OracleEnhancedAdapter" do
     end
 
     it "should explain query with binds" do
-      pk = TestPost.columns.find { |c| c.primary }
+      pk = TestPost.columns_hash[TestPost.primary_key]
       sub = @conn.substitute_at(pk, 0)
       explain = TestPost.where(TestPost.arel_table[pk.name].eq(sub)).bind([pk, 1]).explain
       explain.should include("Cost")
